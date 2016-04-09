@@ -1,4 +1,4 @@
-package lumberjack
+package server
 
 import (
 	"compress/zlib"
@@ -28,8 +28,7 @@ type Message struct {
 
 type AckHandler struct {
 	seq    uint32
-	client  net.Conn
-
+	client net.Conn
 }
 
 type Document map[string]interface{}
@@ -41,9 +40,9 @@ type Failure func(h AckHandler) bool
 type Process func(events []*Message) bool
 
 type Handlers struct {
-	Success   Success
-	Failure   Failure
-	Process   Process
+	Success Success
+	Failure Failure
+	Process Process
 }
 
 func NewLumberJack(bind string, to time.Duration) (*Lumberjack, error) {
