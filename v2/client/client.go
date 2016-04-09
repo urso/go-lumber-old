@@ -163,6 +163,12 @@ func (c *Client) Send(data []interface{}) error {
 
 	// 2. serialize data (payload)
 	if c.opts.compressLvl > 0 {
+		// Compressed Data Frame:
+		// version: uint8 = '2'
+		// code: uint8 = 'C'
+		// payloadSz: uint32
+		// payload: compressed payload
+
 		_, _ = c.wb.Write(codeCompressed) // write compressed header
 
 		offSz := c.wb.Len()
