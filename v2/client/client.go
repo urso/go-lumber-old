@@ -33,8 +33,9 @@ type jsonEncoder func(interface{}) ([]byte, error)
 type Option func(*options) error
 
 var (
-	codeWindowSize = []byte{protocol.CodeVersion, protocol.CodeWindowSize}
-	codeCompressed = []byte{protocol.CodeVersion, protocol.CodeCompressed}
+	codeWindowSize    = []byte{protocol.CodeVersion, protocol.CodeWindowSize}
+	codeCompressed    = []byte{protocol.CodeVersion, protocol.CodeCompressed}
+	codeJSONDataFrame = []byte{protocol.CodeVersion, protocol.CodeJSONDataFrame}
 
 	empty4 = []byte{0, 0, 0, 0}
 )
@@ -257,12 +258,22 @@ func (c *Client) AwaitACK(count uint32) (uint32, error) {
 }
 
 func (c *Client) serialize(out io.Writer, data []interface{}) error {
-	for _, d := range data {
+	for i, d := range data {
 		b, err := c.opts.encoder(d)
 		if err != nil {
 			return err
 		}
 
+		// Write JSON Data Frame:
+		// version: uint8 = '2'
+		// code: uint8 = 'J'
+		// seq: uint32
+		// payloadLen (bytes): uint32
+		// payload: JSON document
+
+		_, _ = out.Write(codeJSONDataFrame)
+		writeUint32(out, uint32(i))
+		writeUint32(out, uint32(len(b)))
 		_, _ = out.Write(b)
 	}
 	return nil
