@@ -3,42 +3,22 @@ package main
 import (
 	"fmt"
 	"log"
-	"os"
-	"time"
 
 	"github.com/urso/go-lumber/v2/server"
 )
 
-//sample implementation of using the lumberjack server
 func main() {
-	tcpBindAddress := "localhost:5044"
-	s, err := server.NewLumberJack(tcpBindAddress, 90*time.Second)
+	s, err := server.ListenAndServe("localhost:5044")
 	if err != nil {
-		fmt.Println("failed to create tcp server: ", err)
-		os.Exit(1)
+		log.Fatal(err)
 	}
-	fmt.Println("tcp server up")
 
 	defer s.Close()
+	fmt.Println("tcp server up")
 
-	ha := server.Handlers{Success: success, Failure: failure, Process: process}
-	server.AcceptConnections(s, &ha)
-}
+	for batch := range s.ReceiveChan() {
+		batch.ACK()
 
-func success(ack server.AckHandler) bool {
-	server.SendAck(ack)
-	return true
-}
-
-func failure(ack server.AckHandler) bool {
-	log.Println("Unable to process incoming packets")
-	return true
-}
-
-func process(events []*server.Message) bool {
-	for _, event := range events {
-		fmt.Println(event.Doc)
+		fmt.Printf("Received batch of %v events\n", len(batch.Events))
 	}
-
-	return true
 }
