@@ -106,6 +106,10 @@ func applyOptions(opts []Option) (options, error) {
 	return o, nil
 }
 
+func (b *Batch) ACK() {
+	close(b.ack)
+}
+
 func NewWithListener(l net.Listener, opts ...Option) (*Server, error) {
 	o, err := applyOptions(opts)
 	if err != nil {
@@ -183,6 +187,7 @@ func (s *Server) run() {
 			break
 		}
 
+		log.Printf("New connection from %v", client.RemoteAddr())
 		conn := newConn(s, client, s.opts.timeout, s.opts.keepalive)
 		s.wg.Add(1)
 		go conn.run()
@@ -205,6 +210,7 @@ func newConn(server *Server, c net.Conn, to, keepalive time.Duration) *conn {
 func (c *conn) run() {
 	go func() {
 		defer c.server.wg.Done()
+		defer close(c.ch)
 		defer close(c.signal)
 
 		if err := c.handle(); err != nil {
@@ -216,12 +222,18 @@ func (c *conn) run() {
 
 	select {
 	case <-c.signal: // client connection closed
+		log.Printf("handle close signal")
 	case <-c.server.done: // handle server shutdown
+		log.Printf("handle server shutdown")
 	}
+
 	_ = c.c.Close()
 }
 
 func (c *conn) handle() error {
+	log.Printf("Start client handler")
+	defer log.Printf("Stop client handler")
+
 	for {
 		// 1. read data into batch
 		b, err := c.reader.readBatch()
@@ -251,9 +263,13 @@ func (c *conn) handle() error {
 }
 
 func (c *conn) ackLoop() {
+	log.Println("start client ack loop")
+	defer log.Println("client ack loop stopped")
+
 	// drain queue on shutdown.
 	// Stop ACKing batches in case of error, forcing client to reconnect
 	defer func() {
+		log.Println("drain ack loop")
 		for range c.ch {
 		}
 	}()
@@ -261,10 +277,13 @@ func (c *conn) ackLoop() {
 	for {
 		select {
 		case <-c.signal: // return on client/server shutdown
+			log.Println("receive client connection close signal")
 			return
-		case b := <-c.ch:
+		case b, open := <-c.ch:
+			if !open {
+				return
+			}
 			if err := c.waitACK(b); err != nil {
-				log.Printf("Stop ack loop due to error: %v", err)
 				return
 			}
 		}
@@ -322,8 +341,7 @@ func newReader(c net.Conn, opts options) *reader {
 func (r *reader) readBatch() (*Batch, error) {
 	// 1. read window size
 	var win [6]byte
-	_, err := io.ReadFull(r.in, win[:])
-	if err != nil {
+	if err := readFull(r.in, win[:]); err != nil {
 		return nil, err
 	}
 
@@ -340,15 +358,14 @@ func (r *reader) readBatch() (*Batch, error) {
 		return nil, err
 	}
 
-	events := make([]interface{}, 0, count)
-	events, err = r.readEvents(r.in, events)
+	events, err := r.readEvents(r.in, make([]interface{}, 0, count))
 	if events == nil || err != nil {
 		return nil, err
 	}
 
 	batch := &Batch{
 		Events: events,
-		ack:    make(chan struct{}),
+		ack:    make(chan struct{}, 1),
 	}
 	return batch, nil
 }
@@ -356,8 +373,7 @@ func (r *reader) readBatch() (*Batch, error) {
 func (r *reader) readEvents(in io.Reader, events []interface{}) ([]interface{}, error) {
 	for len(events) < cap(events) {
 		var hdr [2]byte
-		_, err := io.ReadFull(r.in, hdr[:])
-		if err != nil {
+		if err := readFull(in, hdr[:]); err != nil {
 			return nil, err
 		}
 
@@ -373,10 +389,11 @@ func (r *reader) readEvents(in io.Reader, events []interface{}) ([]interface{}, 
 			}
 			events = append(events, event)
 		case 'C':
-			events, err = r.readCompressed(in, events)
+			readEvents, err := r.readCompressed(in, events)
 			if err != nil {
 				return nil, err
 			}
+			events = readEvents
 		default:
 			return nil, ErrProtocolError
 		}
@@ -386,7 +403,7 @@ func (r *reader) readEvents(in io.Reader, events []interface{}) ([]interface{}, 
 
 func (r *reader) readJSONEvent(in io.Reader) (interface{}, error) {
 	var hdr [8]byte
-	if _, err := io.ReadFull(in, hdr[:]); err != nil {
+	if err := readFull(in, hdr[:]); err != nil {
 		return nil, err
 	}
 
@@ -396,7 +413,7 @@ func (r *reader) readJSONEvent(in io.Reader) (interface{}, error) {
 	}
 
 	buf := r.buf[:payloadSz]
-	if _, err := io.ReadFull(in, buf); err != nil {
+	if err := readFull(in, buf); err != nil {
 		return nil, err
 	}
 
@@ -407,14 +424,14 @@ func (r *reader) readJSONEvent(in io.Reader) (interface{}, error) {
 
 func (r *reader) readCompressed(in io.Reader, events []interface{}) ([]interface{}, error) {
 	var hdr [4]byte
-	if _, err := io.ReadFull(in, hdr[:]); err != nil {
+	if err := readFull(in, hdr[:]); err != nil {
 		return nil, err
 	}
 
 	payloadSz := binary.BigEndian.Uint32(hdr[:])
-	reader, err := zlib.NewReader(io.LimitReader(in, int64(payloadSz)))
+	limit := io.LimitReader(in, int64(payloadSz))
+	reader, err := zlib.NewReader(limit)
 	if err != nil {
-		log.Printf("Failed to initialize zlib reader %v", err)
 		return nil, err
 	}
 
@@ -423,11 +440,14 @@ func (r *reader) readCompressed(in io.Reader, events []interface{}) ([]interface
 		_ = reader.Close()
 		return nil, err
 	}
-
 	if err := reader.Close(); err != nil {
-		log.Printf("Failed to close zlib reader with %v", err)
 		return nil, err
 	}
 
 	return events, nil
+}
+
+func readFull(in io.Reader, buf []byte) error {
+	_, err := io.ReadFull(in, buf)
+	return err
 }
