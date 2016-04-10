@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"compress/zlib"
+	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 
 type Server struct {
 	listener net.Listener
+	opts     options
 
 	ch chan *Batch
 
@@ -29,19 +31,34 @@ type Batch struct {
 	ack    chan struct{}
 }
 
+type Option func(*options) error
+
+type options struct {
+	timeout   time.Duration
+	keepalive time.Duration
+	decoder   jsonDecoder
+	tls       *tls.Config
+}
+
 type conn struct {
-	server *Server
-	c      net.Conn
-	reader *reader
+	server    *Server
+	c         net.Conn
+	reader    *reader
+	to        time.Duration
+	keepalive time.Duration
 
 	signal chan struct{}
 	ch     chan *Batch
 }
 
 type reader struct {
-	in  *bufio.Reader
-	buf []byte
+	in   *bufio.Reader
+	conn net.Conn
+	buf  []byte
+	opts options
 }
+
+type jsonDecoder func([]byte, interface{}) error
 
 var (
 	// ErrProtocolError is returned if an protocol error was detected in the
@@ -49,17 +66,91 @@ var (
 	ErrProtocolError = errors.New("lumberjack protocol error")
 )
 
-func NewWithListener(l net.Listener) (*Server, error) {
+func JSONDecoder(decoder func([]byte, interface{}) error) Option {
+	return func(opt *options) error {
+		opt.decoder = decoder
+		return nil
+	}
+}
+
+func Timeout(to time.Duration) Option {
+	return func(opt *options) error {
+		if to < 0 {
+			return errors.New("timeouts must not be negative")
+		}
+		opt.timeout = to
+		return nil
+	}
+}
+
+func TLS(tls *tls.Config) Option {
+	return func(opt *options) error {
+		opt.tls = tls
+		return nil
+	}
+}
+
+func applyOptions(opts []Option) (options, error) {
+	o := options{
+		decoder:   json.Unmarshal,
+		timeout:   30 * time.Second,
+		keepalive: 3 * time.Second,
+		tls:       nil,
+	}
+
+	for _, opt := range opts {
+		if err := opt(&o); err != nil {
+			return o, err
+		}
+	}
+	return o, nil
+}
+
+func NewWithListener(l net.Listener, opts ...Option) (*Server, error) {
+	o, err := applyOptions(opts)
+	if err != nil {
+		return nil, err
+	}
+
 	s := &Server{
 		listener: l,
 		done:     make(chan struct{}),
 		ch:       make(chan *Batch, 128),
+		opts:     o,
 	}
 
 	s.wg.Add(1)
 	go s.run()
 
 	return s, nil
+}
+
+func ListenAndServeWith(
+	binder func(network, addr string) (net.Listener, error),
+	addr string,
+	opts ...Option,
+) (*Server, error) {
+	l, err := binder("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	return NewWithListener(l, opts...)
+}
+
+func ListenAndServe(addr string, opts ...Option) (*Server, error) {
+	binder := net.Listen
+	o, err := applyOptions(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	if o.tls != nil {
+		binder = func(network, addr string) (net.Listener, error) {
+			return tls.Listen(network, addr, o.tls)
+		}
+	}
+
+	return ListenAndServeWith(binder, addr, opts...)
 }
 
 func (s *Server) Close() error {
@@ -92,19 +183,21 @@ func (s *Server) run() {
 			break
 		}
 
-		conn := newConn(s, client)
+		conn := newConn(s, client, s.opts.timeout, s.opts.keepalive)
 		s.wg.Add(1)
 		go conn.run()
 	}
 }
 
-func newConn(server *Server, c net.Conn) *conn {
+func newConn(server *Server, c net.Conn, to, keepalive time.Duration) *conn {
 	conn := &conn{
-		server: server,
-		c:      c,
-		reader: newReader(c),
-		signal: make(chan struct{}),
-		ch:     make(chan *Batch),
+		server:    server,
+		c:         c,
+		to:        to,
+		keepalive: keepalive,
+		reader:    newReader(c, server.opts),
+		signal:    make(chan struct{}),
+		ch:        make(chan *Batch),
 	}
 	return conn
 }
@@ -187,7 +280,7 @@ func (c *conn) waitACK(batch *Batch) error {
 		case <-batch.ack:
 			// send ack
 			return c.sendACK(n)
-		case <-time.After(10 * time.Second):
+		case <-time.After(c.keepalive):
 			if err := c.sendACK(0); err != nil {
 				return err
 			}
@@ -201,7 +294,7 @@ func (c *conn) sendACK(n int) error {
 	buf[1] = protocol.CodeACK
 	binary.BigEndian.PutUint32(buf[2:], uint32(n))
 
-	if err := c.c.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	if err := c.c.SetWriteDeadline(time.Now().Add(c.to)); err != nil {
 		return err
 	}
 
@@ -216,10 +309,12 @@ func (c *conn) sendACK(n int) error {
 	return nil
 }
 
-func newReader(c net.Conn) *reader {
+func newReader(c net.Conn, opts options) *reader {
 	r := &reader{
-		in:  bufio.NewReader(c),
-		buf: make([]byte, 0, 64),
+		in:   bufio.NewReader(c),
+		conn: c,
+		buf:  make([]byte, 0, 64),
+		opts: opts,
 	}
 	return r
 }
@@ -239,6 +334,10 @@ func (r *reader) readBatch() (*Batch, error) {
 	count := int(binary.BigEndian.Uint32(win[2:]))
 	if count == 0 {
 		return nil, nil
+	}
+
+	if err := r.conn.SetReadDeadline(time.Now().Add(r.opts.timeout)); err != nil {
+		return nil, err
 	}
 
 	events := make([]interface{}, 0, count)
@@ -302,7 +401,7 @@ func (r *reader) readJSONEvent(in io.Reader) (interface{}, error) {
 	}
 
 	var event interface{}
-	err := json.Unmarshal(buf, &event)
+	err := r.opts.decoder(buf, &event)
 	return event, err
 }
 
