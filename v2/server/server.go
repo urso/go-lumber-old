@@ -73,6 +73,16 @@ func JSONDecoder(decoder func([]byte, interface{}) error) Option {
 	}
 }
 
+func Keepalive(kl time.Duration) Option {
+	return func (opt *options) error {
+		if kl < 0 {
+			return errors.New("keepalive must not be negative")
+		}
+		opt.keepalive = kl
+		return nil;
+	}
+}
+
 func Timeout(to time.Duration) Option {
 	return func(opt *options) error {
 		if to < 0 {
