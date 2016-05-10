@@ -8,11 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net"
 	"sync"
 	"time"
 
+	"github.com/urso/go-lumber/log"
 	"github.com/urso/go-lumber/v2/protocol"
 )
 
@@ -74,12 +74,12 @@ func JSONDecoder(decoder func([]byte, interface{}) error) Option {
 }
 
 func Keepalive(kl time.Duration) Option {
-	return func (opt *options) error {
+	return func(opt *options) error {
 		if kl < 0 {
 			return errors.New("keepalive must not be negative")
 		}
 		opt.keepalive = kl
-		return nil;
+		return nil
 	}
 }
 
@@ -224,7 +224,7 @@ func (c *conn) run() {
 		defer close(c.signal)
 
 		if err := c.handle(); err != nil {
-			log.Print(err)
+			log.Println(err)
 		}
 	}()
 
@@ -349,13 +349,17 @@ func newReader(c net.Conn, opts options) *reader {
 }
 
 func (r *reader) readBatch() (*Batch, error) {
+	log.Println("readBatch")
+
 	// 1. read window size
 	var win [6]byte
+	_ = r.conn.SetReadDeadline(time.Time{}) // wait for next batch without timeout
 	if err := readFull(r.in, win[:]); err != nil {
 		return nil, err
 	}
 
 	if win[0] != protocol.CodeVersion && win[1] != protocol.CodeWindowSize {
+		log.Printf("Expected window from. Received %v", win[0:1])
 		return nil, ErrProtocolError
 	}
 
@@ -370,6 +374,7 @@ func (r *reader) readBatch() (*Batch, error) {
 
 	events, err := r.readEvents(r.in, make([]interface{}, 0, count))
 	if events == nil || err != nil {
+		log.Printf("readEvents failed with: %v", err)
 		return nil, err
 	}
 
@@ -388,6 +393,7 @@ func (r *reader) readEvents(in io.Reader, events []interface{}) ([]interface{}, 
 		}
 
 		if hdr[0] != protocol.CodeVersion {
+			log.Println("Event protocol version error")
 			return nil, ErrProtocolError
 		}
 
@@ -395,6 +401,7 @@ func (r *reader) readEvents(in io.Reader, events []interface{}) ([]interface{}, 
 		case 'J':
 			event, err := r.readJSONEvent(in)
 			if err != nil {
+				log.Printf("failed to read json event with: %v\n", err)
 				return nil, err
 			}
 			events = append(events, event)
@@ -405,6 +412,7 @@ func (r *reader) readEvents(in io.Reader, events []interface{}) ([]interface{}, 
 			}
 			events = readEvents
 		default:
+			log.Printf("Unknown frame type: %v", hdr[1])
 			return nil, ErrProtocolError
 		}
 	}
@@ -442,6 +450,7 @@ func (r *reader) readCompressed(in io.Reader, events []interface{}) ([]interface
 	limit := io.LimitReader(in, int64(payloadSz))
 	reader, err := zlib.NewReader(limit)
 	if err != nil {
+		log.Printf("Failed to initialized zlib reader %v\n", err)
 		return nil, err
 	}
 
@@ -454,6 +463,16 @@ func (r *reader) readCompressed(in io.Reader, events []interface{}) ([]interface
 		return nil, err
 	}
 
+	// consume final bytes from limit reader
+	for {
+		var tmp [16]byte
+		if _, err := limit.Read(tmp[:]); err != nil {
+			if err != io.EOF {
+				return nil, err
+			}
+			break
+		}
+	}
 	return events, nil
 }
 
