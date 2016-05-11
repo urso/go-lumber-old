@@ -34,7 +34,7 @@ func newReader(c net.Conn, to time.Duration, jsonDecoder jsonDecoder) *reader {
 	return r
 }
 
-func (r *reader) readBatch() (*lj.Batch, error) {
+func (r *reader) ReadBatch() (*lj.Batch, error) {
 	// 1. read window size
 	var win [6]byte
 	_ = r.conn.SetReadDeadline(time.Time{}) // wait for next batch without timeout

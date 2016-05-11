@@ -37,3 +37,7 @@ func (w *writer) ACK(n int) error {
 	}
 	return nil
 }
+
+func (w *writer) Keepalive(n int) error {
+	return w.ACK(n)
+}

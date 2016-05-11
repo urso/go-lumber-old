@@ -48,11 +48,15 @@ func newServer(
 		return nil, err
 	}
 
+	mkRW := func(client net.Conn) (server.BatchReader, server.ACKWriter, error) {
+		r := newReader(client, o.timeout, o.decoder)
+		w := newWriter(client, o.timeout)
+		return r, w, nil
+	}
+
 	cfg := server.Config{
-		TLS: o.tls,
-		Handler: func(evt server.Eventer, client net.Conn) (server.Handler, error) {
-			return newConn(evt, client, o.timeout, o.keepalive, o.decoder), nil
-		},
+		TLS:     o.tls,
+		Handler: server.DefaultHandler(o.keepalive, mkRW),
 	}
 
 	s, err := mk(cfg)
