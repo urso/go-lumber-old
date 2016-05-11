@@ -78,14 +78,14 @@ func (r *reader) readEvents(in io.Reader, events []interface{}) ([]interface{}, 
 		}
 
 		switch hdr[1] {
-		case 'J':
+		case protocol.CodeJSONDataFrame:
 			event, err := r.readJSONEvent(in)
 			if err != nil {
 				log.Printf("failed to read json event with: %v\n", err)
 				return nil, err
 			}
 			events = append(events, event)
-		case 'C':
+		case protocol.CodeCompressed:
 			readEvents, err := r.readCompressed(in, events)
 			if err != nil {
 				return nil, err
