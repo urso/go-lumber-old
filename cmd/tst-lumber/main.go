@@ -2,6 +2,8 @@ package main
 
 import (
 	"log"
+	"os"
+	"os/signal"
 
 	"github.com/urso/go-lumber/v2/server"
 )
@@ -12,8 +14,14 @@ func main() {
 		log.Fatal(err)
 	}
 
-	defer s.Close()
 	log.Println("tcp server up")
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt)
+	go func() {
+		<-sig
+		_ = s.Close()
+	}()
 
 	for batch := range s.ReceiveChan() {
 		log.Printf("Received batch of %v events\n", len(batch.Events))
