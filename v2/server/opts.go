@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+
+	"github.com/urso/go-lumber/lj"
 )
 
 type Option func(*options) error
@@ -14,6 +16,7 @@ type options struct {
 	keepalive time.Duration
 	decoder   jsonDecoder
 	tls       *tls.Config
+	ch        chan *lj.Batch
 }
 
 func Keepalive(kl time.Duration) Option {
@@ -32,6 +35,13 @@ func Timeout(to time.Duration) Option {
 			return errors.New("timeouts must not be negative")
 		}
 		opt.timeout = to
+		return nil
+	}
+}
+
+func Channel(c chan *lj.Batch) Option {
+	return func(opt *options) error {
+		opt.ch = c
 		return nil
 	}
 }

@@ -20,6 +20,7 @@ type Server struct {
 type Config struct {
 	TLS     *tls.Config
 	Handler HandlerFactory
+	Channel chan *lj.Batch
 }
 
 type Handler interface {
@@ -55,8 +56,12 @@ func NewWithListener(l net.Listener, opts Config) (*Server, error) {
 	s := &Server{
 		listener: l,
 		sig:      makeCloseSignaler(),
-		ch:       make(chan *lj.Batch, 128),
+		ch:       opts.Channel,
 		opts:     opts,
+	}
+
+	if s.ch == nil {
+		s.ch = make(chan *lj.Batch, 128)
 	}
 
 	s.sig.Add(1)
@@ -91,7 +96,7 @@ func ListenAndServe(addr string, opts Config) (*Server, error) {
 func (s *Server) Close() error {
 	err := s.listener.Close()
 	s.sig.Close()
-	close(s.ch)
+	// close(s.ch)
 	return err
 }
 

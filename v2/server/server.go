@@ -57,6 +57,7 @@ func newServer(
 	cfg := server.Config{
 		TLS:     o.tls,
 		Handler: server.DefaultHandler(o.keepalive, mkRW),
+		Channel: o.ch,
 	}
 
 	s, err := mk(cfg)
