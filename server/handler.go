@@ -135,17 +135,31 @@ func (h *defaultHandler) ackLoop() {
 
 func (h *defaultHandler) waitACK(batch *lj.Batch) error {
 	n := len(batch.Events)
-	for {
-		select {
-		case <-h.signal:
-			return nil
-		case <-batch.Await():
-			// send ack
-			return h.writer.ACK(n)
-		case <-time.After(h.keepalive):
-			if err := h.writer.Keepalive(0); err != nil {
-				return err
+
+	if h.keepalive <= 0 {
+		for {
+			select {
+			case <-h.signal:
+				return nil
+			case <-batch.Await():
+				// send ack
+				return h.writer.ACK(n)
+			}
+		}
+	} else {
+		for {
+			select {
+			case <-h.signal:
+				return nil
+			case <-batch.Await():
+				// send ack
+				return h.writer.ACK(n)
+			case <-time.After(h.keepalive):
+				if err := h.writer.Keepalive(0); err != nil {
+					return err
+				}
 			}
 		}
 	}
+
 }
