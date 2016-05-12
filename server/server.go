@@ -102,6 +102,22 @@ func newServer(l net.Listener, opts ...Option) (Server, error) {
 		return nil, err
 	}
 
+	// if only one option enabled, do not instantiate muxing server
+	switch {
+	case cfg.v1 && !cfg.v2:
+		return v1.NewWithListener(l,
+			v1.Timeout(cfg.timeout),
+			v1.Channel(cfg.ch),
+			v1.TLS(cfg.tls))
+	case !cfg.v1 && cfg.v2:
+		return v2.NewWithListener(l,
+			v2.Keepalive(cfg.keepalive),
+			v2.Timeout(cfg.timeout),
+			v2.Channel(cfg.ch),
+			v2.TLS(cfg.tls),
+			v2.JSONDecoder(cfg.decoder))
+	}
+
 	ch := cfg.ch
 	if ch == nil {
 		ch = make(chan *lj.Batch, 128)

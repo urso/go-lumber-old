@@ -5,11 +5,11 @@ import (
 	"os"
 	"os/signal"
 
-	server "github.com/urso/go-lumber/server/v1"
+	"github.com/urso/go-lumber/server"
 )
 
 func main() {
-	s, err := server.ListenAndServe(":5044")
+	s, err := server.ListenAndServe(":5044", server.V1(true), server.V2(false))
 	if err != nil {
 		log.Fatal(err)
 	}

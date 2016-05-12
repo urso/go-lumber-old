@@ -16,6 +16,8 @@ type options struct {
 	keepalive time.Duration
 	decoder   jsonDecoder
 	tls       *tls.Config
+	v1        bool
+	v2        bool
 	ch        chan *lj.Batch
 }
 
@@ -62,11 +64,27 @@ func JSONDecoder(decoder func([]byte, interface{}) error) Option {
 	}
 }
 
+func V1(b bool) Option {
+	return func(opt *options) error {
+		opt.v1 = b
+		return nil
+	}
+}
+
+func V2(b bool) Option {
+	return func(opt *options) error {
+		opt.v2 = b
+		return nil
+	}
+}
+
 func applyOptions(opts []Option) (options, error) {
 	o := options{
 		decoder:   json.Unmarshal,
 		timeout:   30 * time.Second,
 		keepalive: 3 * time.Second,
+		v1:        true,
+		v2:        true,
 		tls:       nil,
 	}
 
