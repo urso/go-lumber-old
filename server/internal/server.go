@@ -14,6 +14,7 @@ type Server struct {
 	listener net.Listener
 	opts     Config
 	ch       chan *lj.Batch
+	ownCH    bool
 	sig      closeSignaler
 }
 
@@ -61,6 +62,7 @@ func NewWithListener(l net.Listener, opts Config) (*Server, error) {
 	}
 
 	if s.ch == nil {
+		s.ownCH = true
 		s.ch = make(chan *lj.Batch, 128)
 	}
 
@@ -96,7 +98,9 @@ func ListenAndServe(addr string, opts Config) (*Server, error) {
 func (s *Server) Close() error {
 	err := s.listener.Close()
 	s.sig.Close()
-	// close(s.ch)
+	if s.ownCH {
+		close(s.ch)
+	}
 	return err
 }
 

@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/tls"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -26,7 +27,8 @@ type Server interface {
 }
 
 type server struct {
-	ch chan *lj.Batch
+	ch    chan *lj.Batch
+	ownCH bool
 
 	done chan struct{}
 	wg   sync.WaitGroup
@@ -36,6 +38,10 @@ type server struct {
 	sv1         *v1.Server
 	sv2         *v2.Server
 }
+
+var (
+	ErrNoVersionEnabled = errors.New("No protocol version enabled")
+)
 
 func NewWithListener(l net.Listener, opts ...Option) (Server, error) {
 	return newServer(l, opts...)
@@ -79,7 +85,9 @@ func (s *server) Close() error {
 	s.sv2.Close()
 	err := s.netListener.Close()
 	s.wg.Wait()
-	close(s.ch)
+	if s.ownCH {
+		close(s.ch)
+	}
 	return err
 }
 
@@ -104,6 +112,8 @@ func newServer(l net.Listener, opts ...Option) (Server, error) {
 
 	// if only one option enabled, do not instantiate muxing server
 	switch {
+	case !cfg.v1 && !cfg.v2:
+		return nil, ErrNoVersionEnabled
 	case cfg.v1 && !cfg.v2:
 		return v1.NewWithListener(l,
 			v1.Timeout(cfg.timeout),
@@ -119,7 +129,9 @@ func newServer(l net.Listener, opts ...Option) (Server, error) {
 	}
 
 	ch := cfg.ch
+	ownCH := false
 	if ch == nil {
+		ownCH = true
 		ch = make(chan *lj.Batch, 128)
 	}
 
@@ -143,6 +155,7 @@ func newServer(l net.Listener, opts ...Option) (Server, error) {
 
 	s := &server{
 		ch:          ch,
+		ownCH:       ownCH,
 		netListener: l,
 		l1:          l1,
 		l2:          l2,
