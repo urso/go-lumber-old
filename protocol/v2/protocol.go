@@ -1,4 +1,4 @@
-package protocol
+package v2
 
 const (
 	Version = 2

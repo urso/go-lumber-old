@@ -8,154 +8,168 @@ import (
 	"sync"
 
 	"github.com/urso/go-lumber/lj"
+	"github.com/urso/go-lumber/server/v1"
+	"github.com/urso/go-lumber/server/v2"
 )
 
 type Server struct {
-	listener net.Listener
-	opts     Config
-	ch       chan *lj.Batch
-	sig      closeSignaler
+	ch chan *lj.Batch
+
+	done chan struct{}
+	wg   sync.WaitGroup
+
+	netListener net.Listener
+	l1, l2      *muxListener
+	sv1         *v1.Server
+	sv2         *v2.Server
 }
 
-type Config struct {
-	TLS     *tls.Config
-	Handler HandlerFactory
-	Channel chan *lj.Batch
-}
-
-type Handler interface {
-	Run()
-	Stop()
-}
-
-type HandlerFactory func(Eventer, net.Conn) (Handler, error)
-
-type Eventer interface {
-	OnEvents(*lj.Batch) error
-}
-
-type chanCallback struct {
-	done <-chan struct{}
-	ch   chan *lj.Batch
-}
-
-func newChanCallback(done <-chan struct{}, ch chan *lj.Batch) *chanCallback {
-	return &chanCallback{done, ch}
-}
-
-func (c *chanCallback) OnEvents(b *lj.Batch) error {
-	select {
-	case <-c.done:
-		return io.EOF
-	case c.ch <- b:
-		return nil
-	}
-}
-
-func NewWithListener(l net.Listener, opts Config) (*Server, error) {
-	s := &Server{
-		listener: l,
-		sig:      makeCloseSignaler(),
-		ch:       opts.Channel,
-		opts:     opts,
-	}
-
-	if s.ch == nil {
-		s.ch = make(chan *lj.Batch, 128)
-	}
-
-	s.sig.Add(1)
-	go s.run()
-
-	return s, nil
+func NewWithListener(l net.Listener, opts ...Option) (*Server, error) {
+	return newServer(l, opts...)
 }
 
 func ListenAndServeWith(
 	binder func(network, addr string) (net.Listener, error),
 	addr string,
-	opts Config,
+	opts ...Option,
 ) (*Server, error) {
 	l, err := binder("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
-	return NewWithListener(l, opts)
+	s, err := NewWithListener(l, opts...)
+	if err != nil {
+		l.Close()
+	}
+	return s, err
 }
 
-func ListenAndServe(addr string, opts Config) (*Server, error) {
+func ListenAndServe(addr string, opts ...Option) (*Server, error) {
+	o, err := applyOptions(opts)
+	if err != nil {
+		return nil, err
+	}
+
 	binder := net.Listen
-	if opts.TLS != nil {
+	if o.tls != nil {
 		binder = func(network, addr string) (net.Listener, error) {
-			return tls.Listen(network, addr, opts.TLS)
+			return tls.Listen(network, addr, o.tls)
 		}
 	}
 
-	return ListenAndServeWith(binder, addr, opts)
+	return ListenAndServeWith(binder, addr, opts...)
 }
 
 func (s *Server) Close() error {
-	err := s.listener.Close()
-	s.sig.Close()
-	// close(s.ch)
+	close(s.done)
+	s.sv1.Close()
+	s.sv2.Close()
+	err := s.netListener.Close()
+	s.wg.Wait()
+	close(s.ch)
 	return err
-}
-
-func (s *Server) Receive() *lj.Batch {
-	select {
-	case <-s.sig.Sig():
-		return nil
-	case b := <-s.ch:
-		return b
-	}
 }
 
 func (s *Server) ReceiveChan() <-chan *lj.Batch {
 	return s.ch
 }
 
-func (s *Server) run() {
-	defer s.sig.Done()
+func (s *Server) Receive() *lj.Batch {
+	select {
+	case <-s.done:
+		return nil
+	case b := <-s.ch:
+		return b
+	}
+}
 
+func newServer(l net.Listener, opts ...Option) (*Server, error) {
+	cfg, err := applyOptions(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	ch := cfg.ch
+	if ch == nil {
+		ch = make(chan *lj.Batch, 128)
+	}
+
+	l1 := newMuxListener(l)
+	l2 := newMuxListener(l)
+
+	sv1, err := v1.NewWithListener(l1, v1.Timeout(cfg.timeout), v1.Channel(ch))
+	if err != nil {
+		return nil, err
+	}
+
+	sv2, err := v2.NewWithListener(l2,
+		v2.Channel(ch),
+		v2.Timeout(cfg.timeout),
+		v2.Keepalive(cfg.keepalive),
+		v2.JSONDecoder(cfg.decoder))
+	if err != nil {
+		sv1.Close()
+		return nil, err
+	}
+
+	s := &Server{
+		ch:          ch,
+		netListener: l,
+		l1:          l1,
+		l2:          l2,
+		sv1:         sv1,
+		sv2:         sv2,
+		done:        make(chan struct{}),
+	}
+	s.wg.Add(1)
+	go s.run()
+
+	return s, nil
+}
+
+func (s *Server) run() {
+	defer s.wg.Done()
 	for {
-		client, err := s.listener.Accept()
+		client, err := s.netListener.Accept()
 		if err != nil {
 			break
 		}
 
-		log.Printf("New connection from %v", client.RemoteAddr())
-		s.startConnHandler(client)
+		s.handle(client)
 	}
 }
 
-func (s *Server) startConnHandler(client net.Conn) {
-	var wgStart sync.WaitGroup
+func (s *Server) handle(client net.Conn) {
+	// read first byte and decide multiplexer
 
-	h, err := s.opts.Handler(newChanCallback(s.sig.Sig(), s.ch), client)
-	if err != nil {
-		log.Printf("Failed to initialize client handler: %v", h)
-		return
-	}
+	sig := make(chan struct{})
 
-	s.sig.Add(1)
-	wgStart.Add(1)
-	stopped := make(chan struct{}, 1)
 	go func() {
-		defer s.sig.Done()
-		defer close(stopped) // signal handler loop stopped
+		var buf [1]byte
+		if _, err := io.ReadFull(client, buf[:]); err != nil {
+			return
+		}
+		close(sig)
 
-		wgStart.Done()
-		h.Run()
+		conn := newMuxConn(buf[0], client)
+		switch buf[0] {
+		case '1':
+			s.l1.ch <- conn
+		case '2':
+			s.l2.ch <- conn
+		default:
+			log.Printf("Unsupported protocol version: %v", buf[0])
+			conn.Close()
+			return
+		}
 	}()
 
-	wgStart.Wait()
 	go func() {
 		select {
-		case <-s.sig.Sig():
-			// server shutdown
-			h.Stop()
-
-		case <-stopped:
-			// handler loop stopped
+		case <-sig:
+		case <-s.done:
+			// close connection if server being shut down
+			client.Close()
 		}
 	}()
 }

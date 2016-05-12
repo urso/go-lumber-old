@@ -1,14 +1,14 @@
-package server
+package v2
 
 import (
 	"errors"
 	"net"
 
-	"github.com/urso/go-lumber/server"
+	"github.com/urso/go-lumber/server/internal"
 )
 
 type Server struct {
-	*server.Server
+	*internal.Server
 }
 
 var (
@@ -18,8 +18,8 @@ var (
 )
 
 func NewWithListener(l net.Listener, opts ...Option) (*Server, error) {
-	return newServer(opts, func(cfg server.Config) (*server.Server, error) {
-		return server.NewWithListener(l, cfg)
+	return newServer(opts, func(cfg internal.Config) (*internal.Server, error) {
+		return internal.NewWithListener(l, cfg)
 	})
 }
 
@@ -28,35 +28,35 @@ func ListenAndServeWith(
 	addr string,
 	opts ...Option,
 ) (*Server, error) {
-	return newServer(opts, func(cfg server.Config) (*server.Server, error) {
-		return server.ListenAndServeWith(binder, addr, cfg)
+	return newServer(opts, func(cfg internal.Config) (*internal.Server, error) {
+		return internal.ListenAndServeWith(binder, addr, cfg)
 	})
 }
 
 func ListenAndServe(addr string, opts ...Option) (*Server, error) {
-	return newServer(opts, func(cfg server.Config) (*server.Server, error) {
-		return server.ListenAndServe(addr, cfg)
+	return newServer(opts, func(cfg internal.Config) (*internal.Server, error) {
+		return internal.ListenAndServe(addr, cfg)
 	})
 }
 
 func newServer(
 	opts []Option,
-	mk func(cfg server.Config) (*server.Server, error),
+	mk func(cfg internal.Config) (*internal.Server, error),
 ) (*Server, error) {
 	o, err := applyOptions(opts)
 	if err != nil {
 		return nil, err
 	}
 
-	mkRW := func(client net.Conn) (server.BatchReader, server.ACKWriter, error) {
-		r := newReader(client, o.timeout)
+	mkRW := func(client net.Conn) (internal.BatchReader, internal.ACKWriter, error) {
+		r := newReader(client, o.timeout, o.decoder)
 		w := newWriter(client, o.timeout)
 		return r, w, nil
 	}
 
-	cfg := server.Config{
+	cfg := internal.Config{
 		TLS:     o.tls,
-		Handler: server.DefaultHandler(0, mkRW),
+		Handler: internal.DefaultHandler(o.keepalive, mkRW),
 		Channel: o.ch,
 	}
 

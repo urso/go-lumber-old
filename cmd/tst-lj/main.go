@@ -5,7 +5,7 @@ import (
 	"os"
 	"os/signal"
 
-	server "github.com/urso/go-lumber/server/v1"
+	"github.com/urso/go-lumber/server"
 )
 
 func main() {

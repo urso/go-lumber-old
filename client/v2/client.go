@@ -1,4 +1,4 @@
-package client
+package v2
 
 import (
 	"bytes"
@@ -11,7 +11,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/urso/go-lumber/v2/protocol"
+	protocol "github.com/urso/go-lumber/protocol/v2"
 )
 
 type Client struct {

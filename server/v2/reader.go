@@ -1,4 +1,4 @@
-package server
+package v2
 
 import (
 	"bufio"
@@ -10,21 +10,25 @@ import (
 	"time"
 
 	"github.com/urso/go-lumber/lj"
-	"github.com/urso/go-lumber/v1/protocol"
+	protocol "github.com/urso/go-lumber/protocol/v2"
 )
 
 type reader struct {
 	in      *bufio.Reader
 	conn    net.Conn
 	timeout time.Duration
+	decoder jsonDecoder
 	buf     []byte
 }
 
-func newReader(c net.Conn, to time.Duration) *reader {
+type jsonDecoder func([]byte, interface{}) error
+
+func newReader(c net.Conn, to time.Duration, jsonDecoder jsonDecoder) *reader {
 	r := &reader{
 		in:      bufio.NewReader(c),
 		conn:    c,
 		timeout: to,
+		decoder: jsonDecoder,
 		buf:     make([]byte, 0, 64),
 	}
 	return r
@@ -74,8 +78,8 @@ func (r *reader) readEvents(in io.Reader, events []interface{}) ([]interface{}, 
 		}
 
 		switch hdr[1] {
-		case protocol.CodeDataFrame:
-			event, err := r.readEvent(in)
+		case protocol.CodeJSONDataFrame:
+			event, err := r.readJSONEvent(in)
 			if err != nil {
 				log.Printf("failed to read json event with: %v\n", err)
 				return nil, err
@@ -93,6 +97,27 @@ func (r *reader) readEvents(in io.Reader, events []interface{}) ([]interface{}, 
 		}
 	}
 	return events, nil
+}
+
+func (r *reader) readJSONEvent(in io.Reader) (interface{}, error) {
+	var hdr [8]byte
+	if err := readFull(in, hdr[:]); err != nil {
+		return nil, err
+	}
+
+	payloadSz := int(binary.BigEndian.Uint32(hdr[4:]))
+	if payloadSz > len(r.buf) {
+		r.buf = make([]byte, payloadSz)
+	}
+
+	buf := r.buf[:payloadSz]
+	if err := readFull(in, buf); err != nil {
+		return nil, err
+	}
+
+	var event interface{}
+	err := r.decoder(buf, &event)
+	return event, err
 }
 
 func (r *reader) readCompressed(in io.Reader, events []interface{}) ([]interface{}, error) {
@@ -129,49 +154,6 @@ func (r *reader) readCompressed(in io.Reader, events []interface{}) ([]interface
 		}
 	}
 	return events, nil
-}
-
-func (r *reader) readEvent(in io.Reader) (interface{}, error) {
-	var hdr [8]byte
-	if err := readFull(in, hdr[:]); err != nil {
-		return nil, err
-	}
-
-	readString := func() (string, error) {
-		var bufBytes [4]byte
-		if err := readFull(in, bufBytes[:]); err != nil {
-			return "", err
-		}
-
-		bytes := int(binary.BigEndian.Uint32(bufBytes[:]))
-		if bytes > len(r.buf) {
-			r.buf = make([]byte, bytes)
-		}
-
-		buf := r.buf[:bytes]
-		if err := readFull(in, buf); err != nil {
-			return "", err
-		}
-
-		return string(buf[:]), nil
-	}
-
-	event := map[string]string{}
-	pairs := int(binary.BigEndian.Uint32(hdr[4:]))
-	for i := 0; i < pairs; i++ {
-		k, err := readString()
-		if err != nil {
-			return nil, err
-		}
-
-		v, err := readString()
-		if err != nil {
-			return nil, err
-		}
-
-		event[k] = v
-	}
-	return event, nil
 }
 
 func readFull(in io.Reader, buf []byte) error {

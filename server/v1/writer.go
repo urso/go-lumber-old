@@ -1,11 +1,11 @@
-package server
+package v1
 
 import (
 	"encoding/binary"
 	"net"
 	"time"
 
-	"github.com/urso/go-lumber/v2/protocol"
+	protocol "github.com/urso/go-lumber/protocol/v1"
 )
 
 type writer struct {
@@ -39,5 +39,6 @@ func (w *writer) ACK(n int) error {
 }
 
 func (w *writer) Keepalive(n int) error {
-	return w.ACK(n)
+	// keepalive not supported by v1
+	return nil
 }
