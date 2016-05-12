@@ -12,7 +12,20 @@ import (
 	"github.com/urso/go-lumber/server/v2"
 )
 
-type Server struct {
+type Server interface {
+	// ReceiveChan returns a channel all received batch requests will be made
+	// available on.
+	ReceiveChan() <-chan *lj.Batch
+
+	// Receive returns the next received batch from the receiver channel.
+	Receive() *lj.Batch
+
+	// Close stops the listener, closes all active connections and closes the
+	// receiver channerl returned from ReceiveChan()
+	Close() error
+}
+
+type server struct {
 	ch chan *lj.Batch
 
 	done chan struct{}
@@ -24,7 +37,7 @@ type Server struct {
 	sv2         *v2.Server
 }
 
-func NewWithListener(l net.Listener, opts ...Option) (*Server, error) {
+func NewWithListener(l net.Listener, opts ...Option) (Server, error) {
 	return newServer(l, opts...)
 }
 
@@ -32,7 +45,7 @@ func ListenAndServeWith(
 	binder func(network, addr string) (net.Listener, error),
 	addr string,
 	opts ...Option,
-) (*Server, error) {
+) (Server, error) {
 	l, err := binder("tcp", addr)
 	if err != nil {
 		return nil, err
@@ -44,7 +57,7 @@ func ListenAndServeWith(
 	return s, err
 }
 
-func ListenAndServe(addr string, opts ...Option) (*Server, error) {
+func ListenAndServe(addr string, opts ...Option) (Server, error) {
 	o, err := applyOptions(opts)
 	if err != nil {
 		return nil, err
@@ -60,7 +73,7 @@ func ListenAndServe(addr string, opts ...Option) (*Server, error) {
 	return ListenAndServeWith(binder, addr, opts...)
 }
 
-func (s *Server) Close() error {
+func (s *server) Close() error {
 	close(s.done)
 	s.sv1.Close()
 	s.sv2.Close()
@@ -70,11 +83,11 @@ func (s *Server) Close() error {
 	return err
 }
 
-func (s *Server) ReceiveChan() <-chan *lj.Batch {
+func (s *server) ReceiveChan() <-chan *lj.Batch {
 	return s.ch
 }
 
-func (s *Server) Receive() *lj.Batch {
+func (s *server) Receive() *lj.Batch {
 	select {
 	case <-s.done:
 		return nil
@@ -83,7 +96,7 @@ func (s *Server) Receive() *lj.Batch {
 	}
 }
 
-func newServer(l net.Listener, opts ...Option) (*Server, error) {
+func newServer(l net.Listener, opts ...Option) (Server, error) {
 	cfg, err := applyOptions(opts)
 	if err != nil {
 		return nil, err
@@ -108,11 +121,11 @@ func newServer(l net.Listener, opts ...Option) (*Server, error) {
 		v2.Keepalive(cfg.keepalive),
 		v2.JSONDecoder(cfg.decoder))
 	if err != nil {
-		sv1.Close()
+		_ = sv1.Close()
 		return nil, err
 	}
 
-	s := &Server{
+	s := &server{
 		ch:          ch,
 		netListener: l,
 		l1:          l1,
@@ -127,7 +140,7 @@ func newServer(l net.Listener, opts ...Option) (*Server, error) {
 	return s, nil
 }
 
-func (s *Server) run() {
+func (s *server) run() {
 	defer s.wg.Done()
 	for {
 		client, err := s.netListener.Accept()
@@ -139,7 +152,7 @@ func (s *Server) run() {
 	}
 }
 
-func (s *Server) handle(client net.Conn) {
+func (s *server) handle(client net.Conn) {
 	// read first byte and decide multiplexer
 
 	sig := make(chan struct{})
