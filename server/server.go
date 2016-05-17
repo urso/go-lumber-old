@@ -9,6 +9,7 @@ import (
 
 	"github.com/urso/go-lumber/lj"
 	"github.com/urso/go-lumber/log"
+	"github.com/urso/go-lumber/server/es"
 	"github.com/urso/go-lumber/server/v1"
 	"github.com/urso/go-lumber/server/v2"
 )
@@ -139,6 +140,17 @@ func newServer(l net.Listener, opts ...Option) (Server, error) {
 			return s, '2', err
 		})
 	}
+	if cfg.es {
+		servers = append(servers, func(l net.Listener) (Server, byte, error) {
+			s, err := es.NewWithListener(l,
+				es.Channel(cfg.ch),
+				es.Timeout(cfg.timeout),
+				es.TLS(cfg.tls),
+				es.Split(cfg.split),
+				es.Silent(cfg.silent))
+			return s, 'H', err
+		})
+	}
 
 	if len(servers) == 0 {
 		return nil, ErrNoVersionEnabled
@@ -201,6 +213,8 @@ func (s *server) handle(client net.Conn) {
 	sig := make(chan struct{})
 
 	go func() {
+		log.Printf("new connection")
+
 		var buf [1]byte
 		if _, err := io.ReadFull(client, buf[:]); err != nil {
 			return
@@ -216,6 +230,8 @@ func (s *server) handle(client net.Conn) {
 			m.l.ch <- conn
 			return
 		}
+
+		log.Printf("Unsupported protocol version: %v", buf[0])
 		client.Close()
 	}()
 

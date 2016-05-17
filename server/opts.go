@@ -18,7 +18,10 @@ type options struct {
 	tls       *tls.Config
 	v1        bool
 	v2        bool
+	es        bool
 	ch        chan *lj.Batch
+	split     int
+	silent    bool
 }
 
 type jsonDecoder func([]byte, interface{}) error
@@ -74,6 +77,30 @@ func V1(b bool) Option {
 func V2(b bool) Option {
 	return func(opt *options) error {
 		opt.v2 = b
+		return nil
+	}
+}
+
+func ES(b bool) Option {
+	return func(opt *options) error {
+		opt.es = b
+		return nil
+	}
+}
+
+func Split(n int) Option {
+	return func(opt *options) error {
+		if n <= 0 {
+			return errors.New("batch split must be >0")
+		}
+		opt.split = n
+		return nil
+	}
+}
+
+func Silent(b bool) Option {
+	return func(opt *options) error {
+		opt.silent = b
 		return nil
 	}
 }
