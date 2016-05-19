@@ -34,9 +34,13 @@ type server struct {
 	wg   sync.WaitGroup
 
 	netListener net.Listener
-	l1, l2      *muxListener
-	sv1         *v1.Server
-	sv2         *v2.Server
+	mux         []muxServer
+}
+
+type muxServer struct {
+	mux    byte
+	l      *muxListener
+	server Server
 }
 
 var (
@@ -81,8 +85,9 @@ func ListenAndServe(addr string, opts ...Option) (Server, error) {
 
 func (s *server) Close() error {
 	close(s.done)
-	s.sv1.Close()
-	s.sv2.Close()
+	for _, m := range s.mux {
+		m.server.Close()
+	}
 	err := s.netListener.Close()
 	s.wg.Wait()
 	if s.ownCH {
@@ -110,57 +115,66 @@ func newServer(l net.Listener, opts ...Option) (Server, error) {
 		return nil, err
 	}
 
-	// if only one option enabled, do not instantiate muxing server
-	switch {
-	case !cfg.v1 && !cfg.v2:
+	var servers []func(net.Listener) (Server, byte, error)
+
+	log.Printf("Server config: %#v", cfg)
+
+	if cfg.v1 {
+		servers = append(servers, func(l net.Listener) (Server, byte, error) {
+			s, err := v1.NewWithListener(l,
+				v1.Timeout(cfg.timeout),
+				v1.Channel(cfg.ch),
+				v1.TLS(cfg.tls))
+			return s, '1', err
+		})
+	}
+	if cfg.v2 {
+		servers = append(servers, func(l net.Listener) (Server, byte, error) {
+			s, err := v2.NewWithListener(l,
+				v2.Keepalive(cfg.keepalive),
+				v2.Timeout(cfg.timeout),
+				v2.Channel(cfg.ch),
+				v2.TLS(cfg.tls),
+				v2.JSONDecoder(cfg.decoder))
+			return s, '2', err
+		})
+	}
+
+	if len(servers) == 0 {
 		return nil, ErrNoVersionEnabled
-	case cfg.v1 && !cfg.v2:
-		return v1.NewWithListener(l,
-			v1.Timeout(cfg.timeout),
-			v1.Channel(cfg.ch),
-			v1.TLS(cfg.tls))
-	case !cfg.v1 && cfg.v2:
-		return v2.NewWithListener(l,
-			v2.Keepalive(cfg.keepalive),
-			v2.Timeout(cfg.timeout),
-			v2.Channel(cfg.ch),
-			v2.TLS(cfg.tls),
-			v2.JSONDecoder(cfg.decoder))
+	}
+	if len(servers) == 1 {
+		s, _, err := servers[0](l)
+		return s, err
 	}
 
-	ch := cfg.ch
 	ownCH := false
-	if ch == nil {
+	if cfg.ch == nil {
 		ownCH = true
-		ch = make(chan *lj.Batch, 128)
+		cfg.ch = make(chan *lj.Batch, 128)
 	}
 
-	l1 := newMuxListener(l)
-	l2 := newMuxListener(l)
+	mux := make([]muxServer, len(servers))
+	for i, mk := range servers {
+		muxL := newMuxListener(l)
+		log.Printf("mk: %v", i)
+		s, b, err := mk(muxL)
+		if err != nil {
+			return nil, err
+		}
 
-	sv1, err := v1.NewWithListener(l1, v1.Timeout(cfg.timeout), v1.Channel(ch))
-	if err != nil {
-		return nil, err
-	}
-
-	sv2, err := v2.NewWithListener(l2,
-		v2.Channel(ch),
-		v2.Timeout(cfg.timeout),
-		v2.Keepalive(cfg.keepalive),
-		v2.JSONDecoder(cfg.decoder))
-	if err != nil {
-		_ = sv1.Close()
-		return nil, err
+		mux[i] = muxServer{
+			mux:    b,
+			l:      muxL,
+			server: s,
+		}
 	}
 
 	s := &server{
-		ch:          ch,
+		ch:          cfg.ch,
 		ownCH:       ownCH,
 		netListener: l,
-		l1:          l1,
-		l2:          l2,
-		sv1:         sv1,
-		sv2:         sv2,
+		mux:         mux,
 		done:        make(chan struct{}),
 	}
 	s.wg.Add(1)
@@ -193,17 +207,16 @@ func (s *server) handle(client net.Conn) {
 		}
 		close(sig)
 
-		conn := newMuxConn(buf[0], client)
-		switch buf[0] {
-		case '1':
-			s.l1.ch <- conn
-		case '2':
-			s.l2.ch <- conn
-		default:
-			log.Printf("Unsupported protocol version: %v", buf[0])
-			conn.Close()
+		for _, m := range s.mux {
+			if m.mux != buf[0] {
+				continue
+			}
+
+			conn := newMuxConn(buf[0], client)
+			m.l.ch <- conn
 			return
 		}
+		client.Close()
 	}()
 
 	go func() {
