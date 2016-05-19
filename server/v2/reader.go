@@ -2,12 +2,14 @@ package v2
 
 import (
 	"bufio"
-	"compress/zlib"
+	//"compress/zlib"
 	"encoding/binary"
 	"io"
 	"log"
 	"net"
 	"time"
+
+	"github.com/klauspost/compress/zlib"
 
 	"github.com/urso/go-lumber/lj"
 	protocol "github.com/urso/go-lumber/protocol/v2"

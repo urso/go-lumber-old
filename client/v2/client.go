@@ -2,13 +2,14 @@ package v2
 
 import (
 	"bytes"
-	"compress/zlib"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"time"
+
+	"github.com/klauspost/compress/zlib"
 
 	protocol "github.com/urso/go-lumber/protocol/v2"
 )
