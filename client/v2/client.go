@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"compress/zlib"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,23 +13,13 @@ import (
 	protocol "github.com/urso/go-lumber/protocol/v2"
 )
 
+// Clients implements the low-level lumberjack protocol.
 type Client struct {
 	conn net.Conn
 	wb   *bytes.Buffer
 
 	opts options
 }
-
-type options struct {
-	timeout     time.Duration
-	encoder     jsonEncoder
-	compressLvl int
-}
-
-type jsonEncoder func(interface{}) ([]byte, error)
-
-// Option type to be passed to New/Dial functions.
-type Option func(*options) error
 
 var (
 	codeWindowSize    = []byte{protocol.CodeVersion, protocol.CodeWindowSize}
@@ -45,51 +34,6 @@ var (
 	// conversation with lumberjack server.
 	ErrProtocolError = errors.New("lumberjack protocol error")
 )
-
-// JsonEncoder client option configuring the encoder used to convert events
-// to json.
-func JSONEncoder(encoder func(interface{}) ([]byte, error)) Option {
-	return func(opt *options) error {
-		opt.encoder = encoder
-		return nil
-	}
-}
-
-// Timeout client option configuring read/write timeout.
-func Timeout(to time.Duration) Option {
-	return func(opt *options) error {
-		if to < 0 {
-			return errors.New("timeouts must not be negative")
-		}
-		opt.timeout = to
-		return nil
-	}
-}
-
-// CompressionLevel client option setting the compression level (0 to 9)
-func CompressionLevel(l int) Option {
-	return func(opt *options) error {
-		if !(0 <= l && l <= 9) {
-			return errors.New("compression level must be within 0 and 9")
-		}
-		opt.compressLvl = l
-		return nil
-	}
-}
-
-func applyOptions(opts []Option) (options, error) {
-	o := options{
-		encoder: json.Marshal,
-		timeout: 30 * time.Second,
-	}
-
-	for _, opt := range opts {
-		if err := opt(&o); err != nil {
-			return o, err
-		}
-	}
-	return o, nil
-}
 
 // Create new client with active connection
 func NewWithConn(c net.Conn, opts ...Option) (*Client, error) {
@@ -139,15 +83,6 @@ func DialWith(
 // Close closes underlying network connection
 func (c *Client) Close() error {
 	return c.conn.Close()
-}
-
-func (c *Client) SyncSend(data []interface{}) (int, error) {
-	if err := c.Send(data); err != nil {
-		return 0, err
-	}
-
-	seq, err := c.AwaitACK(uint32(len(data)))
-	return int(seq), err
 }
 
 // Send sends all data without waiting for ACK
