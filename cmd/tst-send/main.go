@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/elastic/beats/libbeat/common"
 	"github.com/urso/go-lumber/client/v2"
 )
 
@@ -98,7 +97,7 @@ no sea takimata sanctus est Lorem ipsum dolor sit amet.`, "\n")
 func makeEvent() interface{} {
 	line := text[rand.Intn(len(text))]
 	return map[string]interface{}{
-		"@timestamp": common.Time(time.Now()),
+		"@timestamp": time.Now(),
 		"type":       "filebeat",
 		"message":    line,
 		"offset":     1000,
