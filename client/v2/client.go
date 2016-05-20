@@ -214,7 +214,7 @@ func (c *Client) serialize(out io.Writer, data []interface{}) error {
 		// payload: JSON document
 
 		_, _ = out.Write(codeJSONDataFrame)
-		writeUint32(out, uint32(i))
+		writeUint32(out, uint32(i)+1)
 		writeUint32(out, uint32(len(b)))
 		_, _ = out.Write(b)
 	}
