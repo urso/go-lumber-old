@@ -17,6 +17,7 @@ type AsyncClient struct {
 type ackMessage struct {
 	cb  AsyncSendCallback
 	seq uint32
+	err error
 }
 
 type AsyncSendCallback func(seq uint32, err error)
@@ -68,12 +69,18 @@ func (c *AsyncClient) Close() error {
 
 func (c *AsyncClient) Send(cb AsyncSendCallback, data []interface{}) error {
 	if err := c.cl.Send(data); err != nil {
+		c.ch <- ackMessage{
+			seq: 0,
+			cb:  cb,
+			err: err,
+		}
 		return err
 	}
 
 	c.ch <- ackMessage{
 		seq: uint32(len(data)),
 		cb:  cb,
+		err: nil,
 	}
 	return nil
 }
@@ -99,15 +106,25 @@ func (c *AsyncClient) ackLoop() {
 			err = io.EOF
 		}
 		for msg := range c.ch {
+			if msg.err != nil {
+				err = msg.err
+			}
 			msg.cb(0, err)
 		}
 	}()
 	defer c.wg.Done()
 
 	for msg := range c.ch {
+		if msg.err != nil {
+			err = msg.err
+			msg.cb(msg.seq, msg.err)
+			return
+		}
+
 		seq, err = c.cl.AwaitACK(msg.seq)
 		msg.cb(seq, err)
 		if err != nil {
+			c.cl.Close()
 			return
 		}
 	}
