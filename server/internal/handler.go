@@ -1,12 +1,12 @@
 package internal
 
 import (
-	"log"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/urso/go-lumber/lj"
+	"github.com/urso/go-lumber/log"
 )
 
 type defaultHandler struct {

@@ -3,11 +3,11 @@ package internal
 import (
 	"crypto/tls"
 	"io"
-	"log"
 	"net"
 	"sync"
 
 	"github.com/urso/go-lumber/lj"
+	"github.com/urso/go-lumber/log"
 )
 
 type Server struct {
