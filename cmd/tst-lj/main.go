@@ -25,7 +25,7 @@ func main() {
 	log.Println("tcp server up")
 
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt)
+	signal.Notify(sig, os.Interrupt, os.Kill)
 	go func() {
 		<-sig
 		_ = s.Close()
